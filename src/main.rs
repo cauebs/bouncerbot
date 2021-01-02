@@ -74,15 +74,22 @@ impl Bot {
 
             let bot = self.clone();
             let user_id = user.id;
+            let join_msg_id = join_msg.id;
             tokio::spawn(async move {
                 // TODO: parameterize this timeout as well
-                bot.schedule_kick(chat_id, user_id, Duration::from_secs(30))
+                bot.schedule_kick(chat_id, user_id, Duration::from_secs(30), join_msg_id)
                     .await;
             });
         }
     }
 
-    async fn schedule_kick(&self, chat_id: ChatId, user_id: UserId, timeout: Duration) {
+    async fn schedule_kick(
+        &self,
+        chat_id: ChatId,
+        user_id: UserId,
+        timeout: Duration,
+        join_msg_id: MessageId,
+    ) {
         tokio::time::delay_for(timeout).await;
 
         if self.remove_pending_approval(chat_id, user_id).await {
@@ -94,6 +101,11 @@ impl Bot {
             let _ = self
                 .client
                 .execute(UnbanChatMember::new(chat_id, user_id))
+                .await;
+
+            let _ = self
+                .client
+                .execute(DeleteMessage::new(chat_id, join_msg_id))
                 .await;
         }
     }
