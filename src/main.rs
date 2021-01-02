@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use tgbot::{
     async_trait,
@@ -10,7 +10,7 @@ use tgbot::{
     },
     Api, UpdateHandler,
 };
-use tokio::time::Duration;
+use tokio::{sync::Mutex, time::Duration};
 
 type UserId = Integer;
 type ChatId = Integer;
@@ -24,9 +24,10 @@ async fn main() {
     LongPoll::new(client, bot).run().await;
 }
 
+#[derive(Clone)]
 struct Bot {
     client: Api,
-    pending_approvals: HashMap<(ChatId, UserId), MessageId>,
+    pending_approvals: Arc<Mutex<HashMap<(ChatId, UserId), MessageId>>>,
 }
 
 impl Bot {
@@ -37,9 +38,9 @@ impl Bot {
         }
     }
 
-    async fn welcome(&mut self, user: &User, join_msg: &Message) {
+    async fn welcome(&self, user: &User, join_msg: &Message) {
         let chat_id = join_msg.get_chat_id();
-        self.silence(chat_id, user).await;
+        self.silence(chat_id, user.id).await;
 
         // TODO: allow text to be specified externally
         let text = format!(
@@ -55,7 +56,7 @@ impl Bot {
         );
 
         let button = InlineKeyboardButton::with_callback_data(
-            "Sou humana(o) e estou ciente do código de conduta.",
+            "Estou ciente do código de conduta.",
             user.id.to_string(), // this isn't used, but the 'data' field can't be empty
         );
 
@@ -66,51 +67,71 @@ impl Bot {
             .reply_markup(vec![vec![button]]);
 
         if let Ok(msg) = self.client.execute(prepared_msg).await {
-            self.pending_approvals.insert((chat_id, user.id), msg.id);
+            self.pending_approvals
+                .lock()
+                .await
+                .insert((chat_id, user.id), msg.id);
 
-            // TODO: parameterize this timeout as well
-            tokio::time::delay_for(Duration::from_secs(30)).await;
-
-            if self.pending_approvals.contains_key(&(chat_id, user.id)) {
-                let _ = self
-                    .client
-                    .execute(KickChatMember::new(chat_id, user.id))
+            let bot = self.clone();
+            let user_id = user.id;
+            tokio::spawn(async move {
+                // TODO: parameterize this timeout as well
+                bot.schedule_kick(chat_id, user_id, Duration::from_secs(30))
                     .await;
-
-                self.clear_pending_approval(chat_id, user.id).await;
-
-                let _ = self
-                    .client
-                    .execute(UnbanChatMember::new(chat_id, user.id))
-                    .await;
-            }
+            });
         }
     }
 
-    async fn approve_user(&mut self, chat_id: ChatId, user: &User) {
-        self.unsilence(chat_id, user).await;
-        self.clear_pending_approval(chat_id, user.id).await;
+    async fn schedule_kick(&self, chat_id: ChatId, user_id: UserId, timeout: Duration) {
+        tokio::time::delay_for(timeout).await;
+
+        if self.remove_pending_approval(chat_id, user_id).await {
+            let _ = self
+                .client
+                .execute(KickChatMember::new(chat_id, user_id))
+                .await;
+
+            let _ = self
+                .client
+                .execute(UnbanChatMember::new(chat_id, user_id))
+                .await;
+        }
     }
 
-    async fn clear_pending_approval(&mut self, chat_id: ChatId, user_id: UserId) {
-        if let Some(msg_id) = self.pending_approvals.remove(&(chat_id, user_id)) {
+    async fn approve_user(&self, chat_id: ChatId, user_id: UserId) {
+        self.unsilence(chat_id, user_id).await;
+        self.remove_pending_approval(chat_id, user_id).await;
+    }
+
+    async fn remove_pending_approval(&self, chat_id: ChatId, user_id: UserId) -> bool {
+        if let Some(msg_id) = self
+            .pending_approvals
+            .lock()
+            .await
+            .remove(&(chat_id, user_id))
+        {
             let _ = self
                 .client
                 .execute(DeleteMessage::new(chat_id, msg_id))
                 .await;
+
+            true
+        } else {
+            false
         }
     }
-    async fn silence(&self, chat_id: ChatId, user: &User) {
+
+    async fn silence(&self, chat_id: ChatId, user_id: UserId) {
         let _ = self
             .client
-            .execute(RestrictChatMember::new(chat_id, user.id).restrict_all())
+            .execute(RestrictChatMember::new(chat_id, user_id).restrict_all())
             .await;
     }
 
-    async fn unsilence(&self, chat_id: ChatId, user: &User) {
+    async fn unsilence(&self, chat_id: ChatId, user_id: UserId) {
         let _ = self
             .client
-            .execute(RestrictChatMember::new(chat_id, user.id).allow_all())
+            .execute(RestrictChatMember::new(chat_id, user_id).allow_all())
             .await;
     }
 }
@@ -128,8 +149,8 @@ impl UpdateHandler for Bot {
             }
 
             UpdateKind::CallbackQuery(callback) => {
-                if let Some(msg) = &callback.message {
-                    self.approve_user(msg.get_chat_id(), &callback.from).await;
+                if let Some(msg) = callback.message {
+                    self.approve_user(msg.get_chat_id(), callback.from.id).await;
                 }
             }
 

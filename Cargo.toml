@@ -7,4 +7,4 @@ license = "GPL-2+"
 
 [dependencies]
 tgbot = "0.11.0"
-tokio = { version = "0.2", features = ["rt-threaded", "macros", "time"] }
+tokio = { version = "0.2", features = ["rt-threaded", "macros", "sync", "time"] }
