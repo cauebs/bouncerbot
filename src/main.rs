@@ -90,7 +90,7 @@ impl Bot {
         timeout: Duration,
         join_msg_id: MessageId,
     ) {
-        tokio::time::delay_for(timeout).await;
+        tokio::time::sleep(timeout).await;
 
         if self.remove_pending_approval(chat_id, user_id).await {
             let _ = self
